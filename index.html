@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>2인 대전 포즈 추적 + 움직임 경쟁 (MediaPipe)</title>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --panel: #1a1d24;
+      --accent: #2563eb;
+      --text: #e6e8eb;
+      --muted: #9aa0aa;
+      --p1: #38bdf8;   /* 플레이어 1 색 (파랑) */
+      --p2: #fb923c;   /* 플레이어 2 색 (주황) */
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Pretendard, -apple-system, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+      padding: 16px;
+    }
+    h1 { font-size: 20px; margin: 8px 0 4px; }
+    p.sub { color: var(--muted); margin: 0 0 16px; font-size: 14px; }
+
+    /* 영상과 캔버스를 겹쳐서 관절선을 오버레이 */
+    .stage {
+      position: relative;
+      width: 100%;
+      max-width: 860px;
+      aspect-ratio: 4 / 3;
+      background: #000;
+      border: 1px solid #2a2e37;
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    #video, #overlay {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%;
+      height: 100%;
+      /* 셀카처럼 좌우 반전 (원하지 않으면 이 줄 삭제) */
+      transform: scaleX(-1);
+    }
+    #video { object-fit: cover; }
+
+    /* 좌/우 영역 라벨 (영상 위에 고정, 반전 안 됨) */
+    .zoneLabel {
+      position: absolute;
+      top: 10px;
+      padding: 4px 10px;
+      font-size: 13px;
+      font-weight: 700;
+      border-radius: 6px;
+      background: rgba(0,0,0,0.45);
+      pointer-events: none;
+    }
+    .zoneLabel.left  { left: 10px;  color: var(--p1); border: 1px solid var(--p1); }
+    .zoneLabel.right { right: 10px; color: var(--p2); border: 1px solid var(--p2); }
+
+    .controls {
+      display: flex;
+      gap: 8px;
+      margin-top: 16px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    button {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      padding: 10px 18px;
+      border-radius: 8px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    button.secondary { background: #333844; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    #status {
+      margin-top: 12px;
+      font-size: 13px;
+      color: var(--muted);
+      min-height: 18px;
+      text-align: center;
+    }
+
+    /* ===== 경쟁(VS) 막대 ===== */
+    .vsPanel {
+      width: 100%;
+      max-width: 860px;
+      margin-top: 16px;
+      background: var(--panel);
+      border: 1px solid #2a2e37;
+      border-radius: 12px;
+      padding: 16px;
+    }
+    .vsHead {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+      font-size: 14px;
+    }
+    .vsHead .p1name { color: var(--p1); font-weight: 700; }
+    .vsHead .p2name { color: var(--p2); font-weight: 700; }
+    #leaderText { color: var(--muted); font-size: 13px; }
+
+    /* 가운데에서 양쪽으로 채워지는 대결 막대 */
+    .vsTrack {
+      display: flex;
+      height: 26px;
+      border-radius: 8px;
+      overflow: hidden;
+      background: #262a33;
+    }
+    .vsFillP1 {
+      height: 100%;
+      width: 50%;
+      background: var(--p1);
+      transition: width 0.12s linear;
+    }
+    .vsFillP2 {
+      height: 100%;
+      width: 50%;
+      background: var(--p2);
+      transition: width 0.12s linear;
+    }
+
+    /* ===== 두 플레이어 상세 패널 ===== */
+    .grid2 {
+      width: 100%;
+      max-width: 860px;
+      margin-top: 16px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+    @media (max-width: 640px) {
+      .grid2 { grid-template-columns: 1fr; }
+    }
+    .scorePanel {
+      background: var(--panel);
+      border: 1px solid #2a2e37;
+      border-radius: 12px;
+      padding: 16px;
+    }
+    .scorePanel.p1 { border-top: 3px solid var(--p1); }
+    .scorePanel.p2 { border-top: 3px solid var(--p2); }
+
+    .scoreRow {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+    .scoreRow .label { font-size: 13px; color: var(--muted); }
+    .scoreRow .value { font-size: 28px; font-weight: 700; }
+
+    .barWrap {
+      display: grid;
+      grid-template-columns: 70px 1fr 52px;
+      align-items: center;
+      gap: 8px;
+      margin: 8px 0;
+      font-size: 12px;
+    }
+    .barTrack {
+      height: 10px;
+      background: #262a33;
+      border-radius: 5px;
+      overflow: hidden;
+    }
+    .barFill {
+      height: 100%;
+      width: 0%;
+      background: var(--accent);
+      transition: width 0.08s linear;
+    }
+    .barFill.arm  { background: #22d3ee; }
+    .barFill.leg  { background: #f97316; }
+    .barVal { text-align: right; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <h1>2인 대전 포즈 추적</h1>
+  <p class="sub">화면 좌·우로 분할 · 각 플레이어 독립 감지 · 움직임 실시간 경쟁</p>
+
+  <div class="stage">
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="overlay"></canvas>
+    <div class="zoneLabel left">PLAYER 1</div>
+    <div class="zoneLabel right">PLAYER 2</div>
+  </div>
+
+  <div class="controls">
+    <button id="startBtn">카메라 시작</button>
+    <button id="stopBtn" class="secondary" disabled>정지</button>
+    <button id="resetBtn" class="secondary">누적 점수 초기화</button>
+  </div>
+
+  <div id="status">시작하려면 "카메라 시작"을 누르세요. (두 사람이 각각 좌·우에 서세요)</div>
+
+  <!-- ===== 경쟁(VS) 막대 ===== -->
+  <div class="vsPanel">
+    <div class="vsHead">
+      <span class="p1name">PLAYER 1 · <span id="vsP1Total">0</span></span>
+      <span id="leaderText">동점</span>
+      <span class="p2name"><span id="vsP2Total">0</span> · PLAYER 2</span>
+    </div>
+    <div class="vsTrack">
+      <div class="vsFillP1" id="vsFillP1"></div>
+      <div class="vsFillP2" id="vsFillP2"></div>
+    </div>
+  </div>
+
+  <!-- ===== 두 플레이어 상세 패널 ===== -->
+  <div class="grid2">
+    <!-- Player 1 -->
+    <div class="scorePanel p1">
+      <div class="scoreRow">
+        <span class="label">P1 현재 움직임</span>
+        <span class="value" id="frameScore1">0</span>
+      </div>
+      <div class="scoreRow">
+        <span class="label">P1 누적 점수</span>
+        <span class="value" id="totalScore1" style="font-size:20px;">0</span>
+      </div>
+      <div class="barWrap"><span>팔</span><div class="barTrack"><div class="barFill arm" id="armBar1"></div></div><span class="barVal" id="armVal1">0</span></div>
+      <div class="barWrap"><span>다리</span><div class="barTrack"><div class="barFill leg" id="legBar1"></div></div><span class="barVal" id="legVal1">0</span></div>
+      <div class="barWrap"><span>몸통·머리</span><div class="barTrack"><div class="barFill" id="coreBar1"></div></div><span class="barVal" id="coreVal1">0</span></div>
+    </div>
+
+    <!-- Player 2 -->
+    <div class="scorePanel p2">
+      <div class="scoreRow">
+        <span class="label">P2 현재 움직임</span>
+        <span class="value" id="frameScore2">0</span>
+      </div>
+      <div class="scoreRow">
+        <span class="label">P2 누적 점수</span>
+        <span class="value" id="totalScore2" style="font-size:20px;">0</span>
+      </div>
+      <div class="barWrap"><span>팔</span><div class="barTrack"><div class="barFill arm" id="armBar2"></div></div><span class="barVal" id="armVal2">0</span></div>
+      <div class="barWrap"><span>다리</span><div class="barTrack"><div class="barFill leg" id="legBar2"></div></div><span class="barVal" id="legVal2">0</span></div>
+      <div class="barWrap"><span>몸통·머리</span><div class="barTrack"><div class="barFill" id="coreBar2"></div></div><span class="barVal" id="coreVal2">0</span></div>
+    </div>
+  </div>
+
+  <!-- 모듈 방식으로 app.js 로드 -->
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
